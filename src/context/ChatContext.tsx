@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import axios from 'axios';
 import { WhatsAppMessage } from '../types/WhatsAppTypes';
 
@@ -36,14 +36,26 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const [chats, setChats] = useState<{ [key: string]: Chat }>({});
     const [activeChat, setActiveChat] = useState<string | null>(null);
     const [qrCode, setQrCode] = useState<string>('');
+    const [isLoading, setIsLoading] = useState(false);
+    const previousChatsRef = useRef<string>('');
 
     const loadChats = async () => {
+        if (isLoading) return;
         try {
+            setIsLoading(true);
             const response = await axios.get('http://localhost:3000/chats');
             const loadedChats = response.data;
-            setChats(loadedChats);
+            
+            // Сравниваем новые данные с предыдущими
+            const currentChatsString = JSON.stringify(loadedChats);
+            if (currentChatsString !== previousChatsRef.current) {
+                setChats(loadedChats);
+                previousChatsRef.current = currentChatsString;
+            }
         } catch (error) {
             console.error('Error loading chats:', error);
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -54,30 +66,36 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             setActiveChat(phoneNumber);
         } catch (error) {
             console.error('Error creating chat:', error);
-            throw error;
         }
     };
 
     useEffect(() => {
-        loadChats();
+        // Загружаем чаты при монтировании компонента
+        const fetchInitialChats = async () => {
+            await loadChats();
+        };
+        fetchInitialChats();
 
-        const interval = setInterval(loadChats, 5000);
+        // Устанавливаем интервал для периодического обновления чатов
+        const interval = setInterval(async () => {
+            await loadChats();
+        }, 30000); // Обновляем каждые 30 секунд
 
         return () => {
             clearInterval(interval);
         };
-    }, []);
+    }, []); // Пустой массив зависимостей
 
     return (
-        <ChatContext.Provider value={{ 
-            chats, 
-            setChats, 
-            activeChat, 
-            setActiveChat, 
-            loadChats, 
+        <ChatContext.Provider value={{
+            chats,
+            setChats,
+            activeChat,
+            setActiveChat,
+            loadChats,
             createChat,
-            qrCode, 
-            setQrCode 
+            qrCode,
+            setQrCode
         }}>
             {children}
         </ChatContext.Provider>

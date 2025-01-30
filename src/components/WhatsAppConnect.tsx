@@ -5,6 +5,9 @@ import { useChat } from '../context/ChatContext';
 import ChatList from './ChatList';
 import ChatWindow from './ChatWindow';
 import { MdArrowBack } from 'react-icons/md';
+import axios from 'axios'; // Add axios import
+
+const BACKEND_URL = 'http://localhost:3000';
 
 interface WhatsAppConnectProps {
     serverUrl: string;
@@ -20,7 +23,7 @@ interface Chat {
 }
 
 const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }) => {
-    const { setQrCode } = useChat();
+    const { setQrCode, chats: contextChats, loadChats } = useChat();
     const [socket, setSocket] = useState<Socket | null>(null);
     const [isQrScanned, setIsQrScanned] = useState<boolean>(false);
     const [status, setStatus] = useState<string>('Подключение...');
@@ -111,6 +114,23 @@ const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }
         }));
     };
 
+    // Загрузка существующих чатов при монтировании компонента
+    useEffect(() => {
+        if (!contextChats) return;
+        
+        const formattedChats: { [key: string]: Chat } = {};
+        Object.entries(contextChats).forEach(([phoneNumber, chat]) => {
+            formattedChats[phoneNumber] = {
+                phoneNumber,
+                name: chat.name,
+                messages: chat.messages,
+                lastMessage: chat.lastMessage,
+                unreadCount: 0
+            };
+        });
+        setChats(formattedChats);
+    }, [contextChats]);
+
     useEffect(() => {
         const newSocket = io(serverUrl, {
             withCredentials: true
@@ -176,7 +196,7 @@ const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }
 
         setSocket(newSocket);
 
-        fetch(`${serverUrl}/chats`, {
+        fetch(`${BACKEND_URL}/chats`, {
             credentials: 'include'
         })
             .then(response => response.json())
@@ -194,32 +214,39 @@ const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }
         };
     }, [serverUrl, setQrCode]);
 
-    const handleSendMessage = async () => {
-        if (!activeChat || !message) return;
-
+    const handleSendMessage = async (text: string, file?: File) => {
         try {
-            const response = await fetch(`${serverUrl}/send-message`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                credentials: 'include',
-                body: JSON.stringify({
-                    phoneNumber: activeChat,
-                    message,
-                }),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || 'Ошибка при отправке сообщения');
+            let mediaUrl: string | undefined;
+            
+            // Если есть файл, сначала загружаем его
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const response = await axios.post(`${BACKEND_URL}/upload-media`, formData, {
+                    headers: {
+                        'Content-Type': 'multipart/form-data'
+                    }
+                });
+                
+                mediaUrl = response.data.mediaUrl;
             }
 
-            setMessage('');
+            // Отправляем сообщение с медиа URL, если он есть
+            if (socket) {
+                const messageData = {
+                    phoneNumber: activeChat,
+                    message: text,
+                    mediaUrl,
+                    fileName: file?.name,
+                    fileSize: file?.size,
+                    mediaType: file?.type
+                };
+
+                socket.emit('send_message', messageData);
+            }
         } catch (error) {
-            console.error('Ошибка при отправке сообщения:', error);
-            alert('Ошибка при отправке сообщения: ' + error);
+            console.error('Error sending message:', error);
         }
     };
 

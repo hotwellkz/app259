@@ -1,83 +1,82 @@
 import express from 'express';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
+import cors from 'cors';
 import { Client, LocalAuth, Message } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
-import fs from 'fs';
-import dotenv from 'dotenv';
-import path from 'path';
-import cors from 'cors';
 import { loadChats, addMessage, saveChats } from './utils/chatStorage';
-import { ChatMessage, Chat } from './types/chat';
+import { Chat, ChatMessage } from './types/chat';
+import fileUpload from 'express-fileupload';
+import { uploadMediaToSupabase, initializeMediaBucket } from './config/supabase';
+import axios from 'axios';
+import path from 'path';
+import dotenv from 'dotenv';
 
 // Загружаем переменные окружения
 const envPath = path.resolve(__dirname, '../.env');
-console.log('Путь к .env файлу:', envPath);
 dotenv.config({ path: envPath });
-console.log('Переменные окружения загружены');
 
+// Настройка Express
 const app = express();
 const httpServer = createServer(app);
 
-// Список разрешенных источников
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'https://2wix.ru',
-    'https://www.2wix.ru',
-    'https://netlify.app',
-    'http://192.168.100.36:5173'
-];
-
-// Настройка CORS
 const corsOptions = {
-    origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-        // Разрешаем запросы без origin (например, от Postman или curl)
-        if (!origin) {
-            return callback(null, true);
-        }
-        
-        if (allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     methods: ['GET', 'POST'],
     credentials: true
 };
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use(fileUpload());
 
 // Настройка Socket.IO
 const io = new Server(httpServer, {
     cors: {
-        origin: allowedOrigins,
-        methods: ["GET", "POST"],
+        origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+        methods: ['GET', 'POST'],
         credentials: true
-    },
-    pingTimeout: 60000
+    }
 });
 
 // Инициализация WhatsApp клиента
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox'],
-        headless: true
+        args: ['--no-sandbox']
+    }
+});
+
+// Обработчик для загрузки медиафайлов
+app.post('/upload-media', async (req, res) => {
+    try {
+        if (!req.files || !req.files.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        const file = req.files.file as fileUpload.UploadedFile;
+        const buffer = Buffer.from(file.data);
+        const mediaUrl = await uploadMediaToSupabase(
+            buffer,
+            file.name,
+            file.mimetype
+        );
+
+        res.json({ mediaUrl });
+    } catch (error) {
+        console.error('Error uploading media:', error);
+        res.status(500).json({ error: 'Failed to upload media' });
     }
 });
 
 // API endpoint для получения сохраненных чатов
 app.get('/chats', async (req, res) => {
-    console.log('GET /chats запрос получен');
     try {
-        const chats = await loadChats();
-        console.log('Чаты загружены:', chats);
+        console.log('Loading chats...');
+        const chats = loadChats();
         res.json(chats);
     } catch (error) {
-        console.error('Ошибка при загрузке чатов:', error);
+        console.error('Error loading chats:', error);
         res.status(500).json({ error: 'Failed to load chats' });
     }
 });
@@ -90,7 +89,7 @@ app.post('/chat', async (req, res) => {
         if (!phoneNumber) {
             return res.status(400).json({ 
                 success: false, 
-                error: 'Необходимо указать номер телефона' 
+                error: 'Phone number is required' 
             });
         }
 
@@ -105,7 +104,7 @@ app.post('/chat', async (req, res) => {
         if (!contactExists) {
             return res.status(404).json({ 
                 success: false, 
-                error: 'Номер не зарегистрирован в WhatsApp' 
+                error: 'Phone number is not registered in WhatsApp' 
             });
         }
 
@@ -117,16 +116,16 @@ app.post('/chat', async (req, res) => {
             phoneNumber: formattedNumber,
             name: contact.pushname || phoneNumber,
             messages: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            unreadCount: 0,
+            lastMessage: undefined
         };
 
         // Получаем текущие чаты и добавляем новый
-        const chats = await loadChats();
+        const chats = loadChats();
         chats[formattedNumber] = newChat;
         
         // Сохраняем обновленные чаты
-        await saveChats(chats);
+        saveChats(chats);
 
         // Оповещаем всех клиентов о новом чате
         io.emit('chat-created', newChat);
@@ -136,28 +135,148 @@ app.post('/chat', async (req, res) => {
             chat: newChat
         });
     } catch (error) {
-        console.error('Ошибка при создании чата:', error);
+        console.error('Error creating chat:', error);
         res.status(500).json({ 
             success: false, 
-            error: 'Ошибка при создании чата' 
+            error: 'Failed to create chat' 
         });
     }
 });
 
-// Обработка socket.io подключений
-io.on('connection', async (socket) => {
-    console.log('Новое Socket.IO подключение');
+// Обработка входящих сообщений WhatsApp
+client.on('message', async (message: Message) => {
+    try {
+        let mediaUrl: string | undefined;
+        let fileName: string | undefined;
+        let fileSize: number | undefined;
+        let mediaType: string | undefined;
+
+        // Если сообщение содержит медиафайл
+        if (message.hasMedia) {
+            const media = await message.downloadMedia();
+            if (media) {
+                const buffer = Buffer.from(media.data, 'base64');
+                mediaUrl = await uploadMediaToSupabase(
+                    buffer,
+                    `${message.id._serialized}.${media.mimetype.split('/')[1]}`,
+                    media.mimetype
+                );
+                fileName = media.filename || `${message.id._serialized}.${media.mimetype.split('/')[1]}`;
+                fileSize = buffer.length;
+                mediaType = media.mimetype;
+            }
+        }
+
+        const whatsappMessage: ChatMessage = {
+            id: message.id._serialized,
+            from: message.from,
+            to: message.to,
+            body: message.body,
+            timestamp: new Date().toISOString(),
+            fromMe: message.fromMe,
+            hasMedia: message.hasMedia,
+            mediaUrl,
+            fileName,
+            fileSize,
+            mediaType
+        };
+
+        const updatedChat = await addMessage(whatsappMessage);
+        io.emit('whatsapp-message', whatsappMessage);
+        io.emit('chat-updated', updatedChat);
+
+    } catch (error) {
+        console.error('Error processing message:', error);
+    }
+});
+
+// Обработка событий Socket.IO
+io.on('connection', (socket) => {
+    console.log('Client connected');
 
     // Отправляем текущие чаты при подключении
     try {
-        const chats = await loadChats();
+        const chats = loadChats();
         socket.emit('chats', chats);
     } catch (error) {
-        console.error('Ошибка при отправке чатов через сокет:', error);
+        console.error('Error sending chats:', error);
     }
 
+    socket.on('send_message', async (data: {
+        phoneNumber: string;
+        message: string;
+        mediaUrl?: string;
+        fileName?: string;
+        fileSize?: number;
+        mediaType?: string;
+    }) => {
+        try {
+            const { phoneNumber, message, mediaUrl, fileName, fileSize, mediaType } = data;
+            
+            // Форматируем номер телефона
+            const formattedNumber = phoneNumber.includes('@c.us') 
+                ? phoneNumber 
+                : `${phoneNumber.replace(/[^\d]/g, '')}@c.us`;
+            
+            let messageOptions: any = undefined;
+            
+            // Если есть медиафайл, скачиваем его и отправляем через WhatsApp
+            if (mediaUrl) {
+                console.log('Downloading media from:', mediaUrl);
+                const response = await axios.get<Buffer>(mediaUrl, {
+                    responseType: 'arraybuffer'
+                });
+                
+                const buffer = Buffer.from(response.data);
+                const mimeType = mediaType || 'application/octet-stream';
+                
+                messageOptions = {
+                    media: {
+                        data: buffer.toString('base64'),
+                        mimetype: mimeType,
+                        filename: fileName
+                    }
+                };
+
+                if (message) {
+                    messageOptions.caption = message;
+                }
+            } else {
+                messageOptions = message;
+            }
+
+            console.log('Sending message to:', formattedNumber);
+            // Отправляем сообщение через WhatsApp
+            const whatsappMessage = await client.sendMessage(formattedNumber, messageOptions);
+            console.log('Message sent successfully:', whatsappMessage.id._serialized);
+            
+            // Сохраняем сообщение
+            const chat: ChatMessage = {
+                id: whatsappMessage.id._serialized,
+                body: message,
+                from: whatsappMessage.from,
+                to: formattedNumber,
+                timestamp: new Date().toISOString(),
+                fromMe: true,
+                hasMedia: !!mediaUrl,
+                mediaUrl,
+                fileName,
+                fileSize,
+                mediaType
+            };
+
+            const updatedChat = await addMessage(chat);
+            io.emit('whatsapp-message', chat);
+            io.emit('chat-updated', updatedChat);
+
+        } catch (error) {
+            console.error('Error sending message:', error);
+            socket.emit('error', { message: 'Failed to send message' });
+        }
+    });
+
     socket.on('disconnect', () => {
-        console.log('Socket.IO клиент отключился');
+        console.log('Client disconnected');
     });
 });
 
@@ -165,175 +284,50 @@ io.on('connection', async (socket) => {
 client.on('qr', async (qr) => {
     try {
         const qrCode = await qrcode.toDataURL(qr);
-        io.emit('qr', qrCode.split(',')[1]);
+        io.emit('whatsapp-qr', qrCode);
     } catch (error) {
         console.error('Error generating QR code:', error);
     }
 });
 
 client.on('ready', () => {
-    console.log('WhatsApp клиент готов');
-    console.log('Состояние клиента:', {
-        authenticated: client.info ? true : false,
-        pushname: client.info?.pushname,
-        wid: client.info?.wid
-    });
-    io.emit('ready');
+    console.log('WhatsApp client is ready');
+    io.emit('whatsapp-ready');
 });
 
 client.on('authenticated', () => {
-    console.log('WhatsApp аутентифицирован');
-    io.emit('authenticated');
+    console.log('WhatsApp client is authenticated');
+    io.emit('whatsapp-authenticated');
 });
 
-client.on('auth_failure', (msg) => {
-    console.error('Ошибка аутентификации:', msg);
-    io.emit('auth_failure', msg);
+client.on('auth_failure', (error) => {
+    console.error('WhatsApp authentication failed:', error);
+    io.emit('whatsapp-auth-failure', error);
 });
 
 client.on('disconnected', (reason) => {
-    console.log('WhatsApp отключен:', reason);
-    io.emit('disconnected', reason);
+    console.log('WhatsApp client was disconnected:', reason);
+    io.emit('whatsapp-disconnected', reason);
 });
 
-// Добавляем обработчик для проверки состояния соединения
-setInterval(() => {
-    if (client.info) {
-        console.log('WhatsApp клиент активен:', {
-            authenticated: true,
-            pushname: client.info.pushname,
-            wid: client.info.wid
-        });
-    } else {
-        console.log('WhatsApp клиент не авторизован или не готов');
-    }
-}, 30000);
+// Инициализация WhatsApp клиента
+client.initialize().catch((error) => {
+    console.error('Failed to initialize WhatsApp client:', error);
+});
 
-// Обработка входящих сообщений
-client.on('message', async (message: Message) => {
+const PORT = process.env.PORT || 3000;
+
+// Инициализируем бакет при запуске сервера
+(async () => {
     try {
-        const chat = await message.getChat();
-        const contact = await message.getContact();
-        
-        const whatsappMessage: ChatMessage = {
-            id: message.id.id, // Добавляем ID сообщения
-            from: message.from,
-            to: message.to,
-            body: message.body,
-            timestamp: new Date(message.timestamp * 1000).toISOString(),
-            isGroup: chat.isGroup,
-            fromMe: message.fromMe,
-            sender: chat.isGroup ? contact.pushname || contact.number : undefined
-        };
-
-        console.log('Получено новое сообщение:', whatsappMessage);
-
-        // Сохраняем сообщение локально
-        const updatedChat = addMessage(whatsappMessage);
-        
-        // Отправляем обновление всем клиентам
-        io.emit('whatsapp-message', whatsappMessage);
-        io.emit('chat-updated', updatedChat);
-
-        console.log('Сообщение обработано и отправлено клиентам');
+        await initializeMediaBucket();
+        console.log('Media storage initialized successfully');
     } catch (error) {
-        console.error('Ошибка при обработке сообщения:', error);
+        console.error('Failed to initialize media storage:', error);
     }
-});
-
-// API для отправки сообщений
-app.post('/send-message', async (req, res) => {
-    try {
-        const { phoneNumber, message } = req.body;
-        console.log('Получен запрос на отправку сообщения:', { phoneNumber, message });
-
-        // Проверяем авторизацию
-        if (!client.info) {
-            console.error('WhatsApp клиент не авторизован!');
-            return res.status(500).json({
-                success: false,
-                error: 'WhatsApp клиент не авторизован. Пожалуйста, отсканируйте QR-код'
-            });
-        }
-
-        // Проверяем формат номера
-        if (!phoneNumber.match(/^\d+@c\.us$/)) {
-            console.error('Неверный формат номера телефона:', phoneNumber);
-            return res.status(400).json({
-                success: false,
-                error: 'Неверный формат номера телефона'
-            });
-        }
-
-        try {
-            // Проверяем доступность номера
-            console.log('Проверка номера в WhatsApp:', phoneNumber);
-            const isRegistered = await client.isRegisteredUser(phoneNumber);
-            if (!isRegistered) {
-                console.error('Номер не зарегистрирован в WhatsApp:', phoneNumber);
-                return res.status(400).json({
-                    success: false,
-                    error: 'Номер не зарегистрирован в WhatsApp'
-                });
-            }
-
-            // Пытаемся отправить сообщение
-            console.log('Отправка сообщения...', { to: phoneNumber, message });
-            const response = await client.sendMessage(phoneNumber, message);
-            console.log('Ответ от отправки:', response);
-
-            if (!response || !response.id) {
-                throw new Error('Не получен ID сообщения');
-            }
-
-            // Сохраняем сообщение
-            const sentMessage: ChatMessage = {
-                id: response.id.id,
-                from: client.info.wid._serialized,
-                to: phoneNumber,
-                body: message,
-                timestamp: new Date().toISOString(),
-                isGroup: false,
-                fromMe: true
-            };
-
-            const updatedChat = addMessage(sentMessage);
-            io.emit('whatsapp-message', sentMessage);
-            io.emit('chat-updated', updatedChat);
-
-            res.json({
-                success: true,
-                message: 'Сообщение отправлено',
-                messageId: response.id.id
-            });
-        } catch (error) {
-            console.error('Ошибка при отправке:', error);
-            throw error;
-        }
-    } catch (error) {
-        console.error('Ошибка при отправке сообщения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка при отправке сообщения' 
-        });
-    }
-});
-
-const port = 3000;
+})();
 
 // Запуск сервера
-httpServer.listen(port, () => {
-    console.log(`Сервер запущен на порту ${port}`);
-    
-    // Инициализируем хранилище чатов
-    try {
-        const chats = loadChats();
-        console.log('Chat storage initialized successfully');
-    } catch (error) {
-        console.error('Error initializing chat storage:', error);
-    }
-    
-    // Инициализация WhatsApp клиента
-    client.initialize()
-        .catch(error => console.error('Ошибка при инициализации WhatsApp клиента:', error));
+httpServer.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
 });

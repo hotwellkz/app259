@@ -1,17 +1,26 @@
 export interface WhatsAppMessage {
-    from: string;
-    to?: string;
+    id: string;
     body: string;
+    from?: string;
+    to?: string;
     timestamp: string;
-    isGroup: boolean;
-    sender?: string;
     fromMe: boolean;
+    sender?: string;
+    hasMedia?: boolean;
+    mediaUrl?: string;
+    mediaType?: 'image' | 'video' | 'document';
+    fileName?: string;
+    fileSize?: number;
 }
 
 export interface Chat {
     phoneNumber: string;
     name: string;
-    messages: WhatsAppMessage[];
     lastMessage?: WhatsAppMessage;
-    unreadCount?: number;
+    messages: WhatsAppMessage[];
+    unreadCount: number;
+}
+
+export interface ChatStore {
+    [key: string]: Chat;
 }

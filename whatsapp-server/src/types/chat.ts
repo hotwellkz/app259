@@ -1,20 +1,26 @@
 export interface ChatMessage {
-    id?: string;
-    from: string;
-    to?: string;
+    id: string;
     body: string;
+    from?: string;
+    to?: string;
     timestamp: string;
     fromMe: boolean;
-    isGroup: boolean;
     sender?: string;
+    hasMedia?: boolean;
+    mediaUrl?: string;
+    mediaType?: string;
+    fileName?: string;
+    fileSize?: number;
 }
 
 export interface Chat {
-    id?: string;
     phoneNumber: string;
     name: string;
-    messages: ChatMessage[];
     lastMessage?: ChatMessage;
-    createdAt?: string;
-    updatedAt?: string;
+    messages: ChatMessage[];
+    unreadCount: number;
+}
+
+export interface ChatStore {
+    [key: string]: Chat;
 }
