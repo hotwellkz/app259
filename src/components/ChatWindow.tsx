@@ -42,43 +42,44 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ chat, onSendMessage, isMobile, 
     const renderMedia = (message: WhatsAppMessage) => {
         if (!message.hasMedia || !message.mediaUrl) return null;
 
-        switch (message.mediaType) {
-            case 'image':
-                return (
-                    <img
-                        src={message.mediaUrl}
-                        alt="Изображение"
-                        className="max-w-[200px] max-h-[200px] rounded-lg cursor-pointer"
-                        onClick={() => window.open(message.mediaUrl, '_blank')}
-                    />
-                );
-            case 'video':
-                return (
-                    <video
-                        src={message.mediaUrl}
-                        controls
-                        className="max-w-[200px] max-h-[200px] rounded-lg"
-                    />
-                );
-            case 'document':
-                return (
-                    <a
-                        href={message.mediaUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-blue-500 hover:text-blue-700"
-                    >
-                        <MdAttachFile />
-                        <span>{message.fileName || 'Скачать файл'}</span>
-                        {message.fileSize && (
-                            <span className="text-sm text-gray-500">
-                                ({(message.fileSize / 1024 / 1024).toFixed(2)} MB)
-                            </span>
-                        )}
-                    </a>
-                );
-            default:
-                return null;
+        // Определяем тип медиа по MIME-типу
+        const mediaType = message.mediaType?.toLowerCase() || '';
+        console.log('Media type:', mediaType, 'URL:', message.mediaUrl);
+
+        if (mediaType.startsWith('image/') || mediaType === 'image') {
+            return (
+                <img
+                    src={message.mediaUrl}
+                    alt="Изображение"
+                    className="max-w-[200px] max-h-[200px] rounded-lg cursor-pointer"
+                    onClick={() => window.open(message.mediaUrl, '_blank')}
+                />
+            );
+        } else if (mediaType.startsWith('video/') || mediaType === 'video') {
+            return (
+                <video
+                    src={message.mediaUrl}
+                    controls
+                    className="max-w-[200px] max-h-[200px] rounded-lg"
+                />
+            );
+        } else {
+            return (
+                <a
+                    href={message.mediaUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-blue-500 hover:text-blue-700"
+                >
+                    <MdAttachFile />
+                    <span>{message.fileName || 'Скачать файл'}</span>
+                    {message.fileSize && (
+                        <span className="text-sm text-gray-500">
+                            ({(message.fileSize / 1024 / 1024).toFixed(2)} MB)
+                        </span>
+                    )}
+                </a>
+            );
         }
     };
 

@@ -2,7 +2,7 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
 import cors from 'cors';
-import { Client, LocalAuth, Message } from 'whatsapp-web.js';
+import { Client, LocalAuth, Message, MessageMedia } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import { loadChats, addMessage, saveChats, initializeChatsCache } from './utils/chatStorage';
 import { Chat, ChatMessage } from './types/chat';
@@ -47,22 +47,25 @@ const client = new Client({
     }
 });
 
-// Обработчик для загрузки медиафайлов
+// API endpoint для загрузки медиафайлов
 app.post('/upload-media', async (req, res) => {
     try {
         if (!req.files || !req.files.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        const file = req.files.file as fileUpload.UploadedFile;
-        const buffer = Buffer.from(file.data);
-        const mediaUrl = await uploadMediaToSupabase(
-            buffer,
-            file.name,
-            file.mimetype
-        );
+        const uploadedFile = req.files.file as fileUpload.UploadedFile;
+        const buffer = Buffer.from(uploadedFile.data);
+        const fileName = uploadedFile.name;
+        const mediaType = uploadedFile.mimetype;
 
-        res.json({ mediaUrl });
+        console.log('Uploading file:', fileName, 'type:', mediaType);
+
+        // Загружаем файл в Supabase Storage
+        const publicUrl = await uploadMediaToSupabase(buffer, fileName, mediaType);
+        console.log('File uploaded successfully:', publicUrl);
+
+        res.json({ url: publicUrl });
     } catch (error) {
         console.error('Error uploading media:', error);
         res.status(500).json({ error: 'Failed to upload media' });
@@ -190,7 +193,7 @@ client.on('message', async (message: Message) => {
     }
 });
 
-// Обработка событий Socket.IO
+// Обработчики событий Socket.IO
 io.on('connection', (socket) => {
     console.log('Client connected');
 
@@ -220,42 +223,46 @@ io.on('connection', (socket) => {
                 ? phoneNumber 
                 : `${phoneNumber.replace(/[^\d]/g, '')}@c.us`;
             
-            let messageOptions: any = undefined;
+            let whatsappMessage;
             
             // Если есть медиафайл, скачиваем его и отправляем через WhatsApp
             if (mediaUrl) {
                 console.log('Downloading media from:', mediaUrl);
-                const response = await axios.get<Buffer>(mediaUrl, {
-                    responseType: 'arraybuffer'
-                });
-                
-                const buffer = Buffer.from(response.data);
-                const mimeType = mediaType || 'application/octet-stream';
-                
-                messageOptions = {
-                    media: {
-                        data: buffer.toString('base64'),
-                        mimetype: mimeType,
-                        filename: fileName
-                    }
-                };
-
-                if (message) {
-                    messageOptions.caption = message;
+                try {
+                    const response = await axios.get(mediaUrl, {
+                        responseType: 'arraybuffer'
+                    });
+                    
+                    const buffer = Buffer.from(response.data as ArrayBuffer);
+                    const mimeType = mediaType || 'application/octet-stream';
+                    
+                    // Создаем объект MessageMedia
+                    const media = new MessageMedia(
+                        mimeType,
+                        buffer.toString('base64'),
+                        fileName
+                    );
+                    
+                    // Отправляем медиафайл через WhatsApp
+                    whatsappMessage = await client.sendMessage(formattedNumber, media, {
+                        caption: message // Добавляем текст сообщения как подпись к медиафайлу
+                    });
+                    
+                    console.log('Media message sent successfully:', whatsappMessage.id._serialized);
+                } catch (error) {
+                    console.error('Error downloading or sending media:', error);
+                    throw new Error('Failed to send media message');
                 }
             } else {
-                messageOptions = message;
+                // Отправляем обычное текстовое сообщение
+                whatsappMessage = await client.sendMessage(formattedNumber, message);
+                console.log('Text message sent successfully:', whatsappMessage.id._serialized);
             }
-
-            console.log('Sending message to:', formattedNumber);
-            // Отправляем сообщение через WhatsApp
-            const whatsappMessage = await client.sendMessage(formattedNumber, messageOptions);
-            console.log('Message sent successfully:', whatsappMessage.id._serialized);
             
-            // Сохраняем сообщение
-            const chat: ChatMessage = {
+            // Создаем объект сообщения для сохранения
+            const chatMessage: ChatMessage = {
                 id: whatsappMessage.id._serialized,
-                body: message,
+                body: message || '',
                 from: whatsappMessage.from,
                 to: formattedNumber,
                 timestamp: new Date().toISOString(),
@@ -267,8 +274,11 @@ io.on('connection', (socket) => {
                 mediaType
             };
 
-            const updatedChat = await addMessage(chat);
-            io.emit('whatsapp-message', chat);
+            // Сохраняем сообщение и получаем обновленный чат
+            const updatedChat = await addMessage(chatMessage);
+            
+            // Оповещаем всех клиентов о новом сообщении и обновлении чата
+            io.emit('whatsapp-message', chatMessage);
             io.emit('chat-updated', updatedChat);
 
         } catch (error) {

@@ -214,39 +214,66 @@ const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }
         };
     }, [serverUrl, setQrCode]);
 
-    const handleSendMessage = async (text: string, file?: File) => {
+    // Функция для отправки сообщения
+    const handleSendMessage = async (phoneNumber: string, message: string, file?: File) => {
+        if (!socket) return;
+
         try {
-            let mediaUrl: string | undefined;
-            
-            // Если есть файл, сначала загружаем его
+            let mediaUrl = '';
+            let mediaType = '';
+            let fileName = '';
+            let fileSize = 0;
+
             if (file) {
+                // Создаем FormData для загрузки файла
                 const formData = new FormData();
                 formData.append('file', file);
-                
+
+                // Загружаем файл на сервер
                 const response = await axios.post(`${BACKEND_URL}/upload-media`, formData, {
                     headers: {
                         'Content-Type': 'multipart/form-data'
-                    }
+                    },
+                    withCredentials: true
                 });
-                
-                mediaUrl = response.data.mediaUrl;
+
+                if (response.data.url) {
+                    mediaUrl = response.data.url;
+                    mediaType = file.type || 'application/octet-stream';
+                    fileName = file.name;
+                    fileSize = file.size;
+                }
             }
 
-            // Отправляем сообщение с медиа URL, если он есть
-            if (socket) {
-                const messageData = {
-                    phoneNumber: activeChat,
-                    message: text,
-                    mediaUrl,
-                    fileName: file?.name,
-                    fileSize: file?.size,
-                    mediaType: file?.type
-                };
+            // Отправляем сообщение через сокет
+            socket.emit('send_message', {
+                phoneNumber,
+                message,
+                mediaUrl,
+                mediaType,
+                fileName,
+                fileSize
+            });
 
-                socket.emit('send_message', messageData);
-            }
+            // Добавляем сообщение в локальный стейт
+            const newMessage: WhatsAppMessage = {
+                id: Date.now().toString(),
+                body: message,
+                from: 'me',
+                to: phoneNumber,
+                timestamp: new Date().toISOString(),
+                fromMe: true,
+                hasMedia: !!mediaUrl,
+                mediaUrl,
+                mediaType,
+                fileName,
+                fileSize
+            };
+
+            addMessageToChat(newMessage);
         } catch (error) {
             console.error('Error sending message:', error);
+            alert('Failed to send message');
         }
     };
 
@@ -354,7 +381,7 @@ const WhatsAppConnect: React.FC<WhatsAppConnectProps> = ({ serverUrl, isMobile }
                             chat={activeChat ? chats[activeChat] : null}
                             message={message}
                             setMessage={setMessage}
-                            onSendMessage={handleSendMessage}
+                            onSendMessage={(text, file) => handleSendMessage(activeChat!, text, file)}
                             status={status}
                             isMobile={isMobile}
                         />
