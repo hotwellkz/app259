@@ -25,14 +25,11 @@ let chatsCache: ChatStore = {};
 // Загрузка чатов
 export async function loadChats(): Promise<ChatStore> {
     try {
-        // Если есть кэш, возвращаем его
-        if (Object.keys(chatsCache).length > 0) {
-            return chatsCache;
-        }
-
-        // Загружаем из Supabase
+        // Всегда загружаем актуальные данные из Supabase
         const supabaseChats = await getLatestChatsFromSupabase();
-        chatsCache = supabaseChats || {};
+        if (supabaseChats) {
+            chatsCache = supabaseChats;
+        }
         return chatsCache;
     } catch (error) {
         console.error('Error loading chats:', error);

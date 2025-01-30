@@ -8,7 +8,7 @@ dotenv.config({ path: envPath });
 
 // Создаем клиент Supabase
 const supabaseUrl = process.env.SUPABASE_URL || 'https://bhlzwqteygmxpxznezyg.supabase.co';
-const supabaseKey = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJobHp3cXRleWdteHB4em5lenlnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDY1NDU2ODYsImV4cCI6MjAyMjEyMTY4Nn0.4_sQqBqHAUlZHnxY7TF0EbHOaOzVXJKC-rq-jkx4YRc';
+const supabaseKey = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJobHp3cXRleWdteHB4em5lenlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczNjg4MzY1NywiZXhwIjoyMDUyNDU5NjU3fQ.wWy9___70HpLhE-hKnURC0bDSCSgX_CIq44l57G710c';
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 

@@ -49,11 +49,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
     const createChat = async (phoneNumber: string) => {
         try {
-            // Создаем новый чат на сервере
             await axios.post('http://localhost:3000/chat', { phoneNumber });
-            // Перезагружаем список чатов
             await loadChats();
-            // Устанавливаем новый чат как активный
             setActiveChat(phoneNumber);
         } catch (error) {
             console.error('Error creating chat:', error);
@@ -63,6 +60,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         loadChats();
+
+        const interval = setInterval(loadChats, 5000);
+
+        return () => {
+            clearInterval(interval);
+        };
     }, []);
 
     return (
