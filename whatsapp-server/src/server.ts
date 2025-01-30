@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import cors from 'cors';
 import { Client, LocalAuth, Message } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
-import { loadChats, addMessage, saveChats } from './utils/chatStorage';
+import { loadChats, addMessage, saveChats, initializeChatsCache } from './utils/chatStorage';
 import { Chat, ChatMessage } from './types/chat';
 import fileUpload from 'express-fileupload';
 import { uploadMediaToSupabase, initializeMediaBucket } from './config/supabase';
@@ -73,7 +73,7 @@ app.post('/upload-media', async (req, res) => {
 app.get('/chats', async (req, res) => {
     try {
         console.log('Loading chats...');
-        const chats = loadChats();
+        const chats = await loadChats();
         res.json(chats);
     } catch (error) {
         console.error('Error loading chats:', error);
@@ -121,11 +121,11 @@ app.post('/chat', async (req, res) => {
         };
 
         // Получаем текущие чаты и добавляем новый
-        const chats = loadChats();
+        const chats = await loadChats();
         chats[formattedNumber] = newChat;
         
         // Сохраняем обновленные чаты
-        saveChats(chats);
+        await saveChats(chats);
 
         // Оповещаем всех клиентов о новом чате
         io.emit('chat-created', newChat);
@@ -195,12 +195,14 @@ io.on('connection', (socket) => {
     console.log('Client connected');
 
     // Отправляем текущие чаты при подключении
-    try {
-        const chats = loadChats();
-        socket.emit('chats', chats);
-    } catch (error) {
-        console.error('Error sending chats:', error);
-    }
+    (async () => {
+        try {
+            const chats = await loadChats();
+            socket.emit('chats', chats);
+        } catch (error) {
+            console.error('Error sending chats:', error);
+        }
+    })();
 
     socket.on('send_message', async (data: {
         phoneNumber: string;
@@ -317,17 +319,22 @@ client.initialize().catch((error) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Инициализируем бакет при запуске сервера
+// Инициализируем сервер
 (async () => {
     try {
+        // Инициализируем бакет для медиафайлов
         await initializeMediaBucket();
         console.log('Media storage initialized successfully');
+
+        // Инициализируем кэш чатов
+        await initializeChatsCache();
+        console.log('Chat cache initialized successfully');
+
+        // Запускаем сервер
+        httpServer.listen(PORT, () => {
+            console.log(`Server is running on port ${PORT}`);
+        });
     } catch (error) {
-        console.error('Failed to initialize media storage:', error);
+        console.error('Error initializing server:', error);
     }
 })();
-
-// Запуск сервера
-httpServer.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});

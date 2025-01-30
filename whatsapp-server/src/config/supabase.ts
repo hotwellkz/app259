@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { ChatStore } from '../types/chat';
+import { ChatStore, Chat } from '../types/chat';
 import dotenv from 'dotenv';
 import path from 'path';
 
@@ -16,6 +16,66 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Загрузка чатов из Supabase
+export async function getChatsFromSupabase(): Promise<ChatStore> {
+    try {
+        const { data, error } = await supabase
+            .from('whatsapp_chats')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (error) {
+            throw error;
+        }
+
+        if (data && data.length > 0 && data[0].chats) {
+            console.log('Loaded chats from Supabase:', Object.keys(data[0].chats).length);
+            return data[0].chats as ChatStore;
+        }
+
+        return {};
+    } catch (error) {
+        console.error('Error loading chats from Supabase:', error);
+        return {};
+    }
+}
+
+// Сохранение чата в Supabase
+export async function saveChatToSupabase(chat: Chat): Promise<void> {
+    try {
+        // Получаем текущие чаты
+        const { data, error: fetchError } = await supabase
+            .from('whatsapp_chats')
+            .select('chats')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        let currentChats: ChatStore = {};
+        if (data && data.length > 0 && data[0].chats) {
+            currentChats = data[0].chats as ChatStore;
+        }
+
+        // Обновляем чаты
+        currentChats[chat.phoneNumber] = chat;
+
+        // Сохраняем обновленные чаты
+        const { error } = await supabase
+            .from('whatsapp_chats')
+            .insert({
+                chats: currentChats,
+                created_at: new Date().toISOString()
+            });
+
+        if (error) {
+            throw error;
+        }
+    } catch (error) {
+        console.error('Error saving chat to Supabase:', error);
+        throw error;
+    }
+}
 
 // Инициализация бакета для медиафайлов
 export async function initializeMediaBucket() {
@@ -53,27 +113,6 @@ export async function initializeMediaBucket() {
     }
 }
 
-// Получение последних чатов из Supabase
-export async function getLatestChatsFromSupabase(): Promise<ChatStore> {
-    try {
-        const { data, error } = await supabase
-            .from('whatsapp_chats')
-            .select('chats')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-        if (error) {
-            console.error('Error fetching chats from Supabase:', error);
-            throw error;
-        }
-
-        return (data && data.length > 0) ? data[0].chats : {};
-    } catch (error) {
-        console.error('Error in getLatestChatsFromSupabase:', error);
-        throw error;
-    }
-}
-
 // Загрузка медиафайла в Supabase Storage
 export async function uploadMediaToSupabase(
     file: Buffer,
@@ -81,34 +120,41 @@ export async function uploadMediaToSupabase(
     mediaType: string
 ): Promise<string> {
     try {
-        const bucket = mediaType.startsWith('image/') ? 'images' : 
-                      mediaType.startsWith('video/') ? 'videos' : 'documents';
-        
         const fileExt = fileName.split('.').pop() || '';
-        const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-        const filePath = `${bucket}/${uniqueFileName}`;
+        const timestamp = new Date().getTime();
+        const uniqueFileName = `${timestamp}_${fileName}`;
+        
+        let folderPath = 'other';
+        if (mediaType.startsWith('image/')) {
+            folderPath = 'images';
+        } else if (mediaType.startsWith('video/')) {
+            folderPath = 'videos';
+        } else if (mediaType.startsWith('audio/')) {
+            folderPath = 'audio';
+        }
 
-        const { error: uploadError } = await supabase.storage
+        const filePath = `${folderPath}/${uniqueFileName}`;
+
+        const { error: uploadError } = await supabase
+            .storage
             .from('whatsapp-media')
             .upload(filePath, file, {
                 contentType: mediaType,
-                cacheControl: '3600',
-                upsert: false
+                cacheControl: '3600'
             });
 
         if (uploadError) {
-            console.error('Error uploading file to Supabase:', uploadError);
             throw uploadError;
         }
 
-        // Получаем публичный URL файла
-        const { data: { publicUrl } } = supabase.storage
+        const { data: { publicUrl } } = supabase
+            .storage
             .from('whatsapp-media')
             .getPublicUrl(filePath);
 
         return publicUrl;
     } catch (error) {
-        console.error('Error in uploadMediaToSupabase:', error);
+        console.error('Error uploading media to Supabase:', error);
         throw error;
     }
 }
